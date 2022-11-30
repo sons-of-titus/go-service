@@ -7,10 +7,12 @@ import (
 	"github.com/sons-of-titus/go-service/models"
 	"github.com/sons-of-titus/go-service/repo"
 	"net/http"
+	"sync"
 )
 
 type handler struct {
 	repo repo.Repo
+	once sync.Once
 }
 
 type Handler interface {
@@ -18,6 +20,8 @@ type Handler interface {
 	ProductIndex(w http.ResponseWriter, r *http.Request)
 	OrderShow(w http.ResponseWriter, r *http.Request)
 	OrderInsert(w http.ResponseWriter, r *http.Request)
+	Close(w http.ResponseWriter, r *http.Request)
+	Stats(w http.ResponseWriter, r *http.Request)
 }
 
 func New() (Handler, error) {
@@ -72,4 +76,21 @@ func (h *handler) OrderInsert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeResponse(w, http.StatusOK, order, nil)
+}
+
+// Close closes the Order App for incoming orders
+func (h *handler) Close(w http.ResponseWriter, r *http.Request) {
+	h.invokeClose()
+	writeResponse(w, http.StatusOK, "The order App is now closed!", nil)
+}
+
+func (h *handler) invokeClose() {
+	h.once.Do(func() {
+		h.repo.Close()
+	})
+}
+
+// Stats outputs order statistics from the repo
+func (h *handler) Stats(w http.ResponseWriter, r *http.Request) {
+	writeResponse(w, http.StatusOK, h.repo.GetOrderStats(), nil)
 }

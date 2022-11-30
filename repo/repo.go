@@ -4,14 +4,17 @@ import (
 	"fmt"
 	"github.com/sons-of-titus/go-service/db"
 	"github.com/sons-of-titus/go-service/models"
+	"github.com/sons-of-titus/go-service/stats"
 	"math"
-	"sync"
 )
 
 type repo struct {
-	products *db.ProductDB
-	orders   *db.OrderDB
-	lock     sync.Mutex
+	products  *db.ProductDB
+	orders    *db.OrderDB
+	incoming  chan models.Order
+	stats     stats.StatsService
+	done      chan struct{}
+	processed chan models.Order
 }
 
 // Repo is the interface we expose to outside packages
@@ -19,18 +22,29 @@ type Repo interface {
 	CreateOrder(item models.Item) (*models.Order, error)
 	GetAllProducts() []models.Product
 	GetOrder(id string) (models.Order, error)
+	Close()
+	GetOrderStats() models.Statistics
 }
 
 // New creates a new Order repo with the correct database dependencies
 func New() (Repo, error) {
+	processed := make(chan models.Order)
+	done := make(chan struct{})
 	p, err := db.NewProducts()
 	if err != nil {
 		return nil, err
 	}
+	statsService := stats.New(processed, done)
 	o := repo{
-		products: p,
-		orders:   db.NewOrders(),
+		products:  p,
+		orders:    db.NewOrders(),
+		stats:     statsService,
+		incoming:  make(chan models.Order),
+		done:      done,
+		processed: processed,
 	}
+	//start the order processor
+	go o.processOrders()
 	return &o, nil
 }
 
@@ -50,9 +64,15 @@ func (r *repo) CreateOrder(item models.Item) (*models.Order, error) {
 		return nil, err
 	}
 	order := models.NewOrder(item)
-	r.orders.Upsert(order)
-	r.processOrders(&order)
-	return &order, nil
+	//place the order on the incoming orders channel or fail if the app is closed
+	select {
+	case r.incoming <- order:
+		r.orders.Upsert(order)
+		return &order, nil
+	case <-r.done:
+		return nil, fmt.Errorf("order app is closed, try again later")
+	}
+
 }
 
 // validateItem runs validations on a given order
@@ -66,12 +86,20 @@ func (r *repo) validateItem(item models.Item) error {
 	return nil
 }
 
-func (r *repo) processOrders(order *models.Order) {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-	r.processOrder(order)
-	r.orders.Upsert(*order)
-	fmt.Printf("Processing order %s completed\n", order.ID)
+func (r *repo) processOrders() {
+	fmt.Println("Order processing started!")
+	for {
+		select {
+		case order := <-r.incoming:
+			r.processOrder(&order)
+			r.orders.Upsert(order)
+			fmt.Printf("Processing order %s completed\n", order.ID)
+			r.processed <- order
+		case <-r.done:
+			fmt.Println("Order processing stopped!")
+			return
+		}
+	}
 }
 
 // processOrder is an internal method which completes or rejects an order
@@ -95,4 +123,14 @@ func (r *repo) processOrder(order *models.Order) {
 	total := math.Round(float64(order.Item.Amount)*product.Price*100) / 100
 	order.Total = &total
 	order.Complete()
+}
+
+// Close closes the orders app for incoming orders
+func (r *repo) Close() {
+	close(r.done)
+}
+
+// GetOrderStats returns the order statistics of the orders app
+func (r *repo) GetOrderStats() models.Statistics {
+	return (*r).stats.GetStats()
 }

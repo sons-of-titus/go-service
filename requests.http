@@ -1,3 +1,20 @@
 GET http://localhost:3000/
 ###
 GET http://localhost:3000/products/
+###
+POST http://localhost:3000/orders
+Content-Type: application/json
+
+{
+  "ProductID": "MWBLU",
+  "Amount": 5
+}
+
+###
+GET http://localhost:3000/orders/{order.ID}
+
+###
+POST http://localhost:3000/close
+
+###
+GET http://localhost:3000/stats
