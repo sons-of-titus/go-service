@@ -11,10 +11,12 @@ Content-Type: application/json
 }
 
 ###
-GET http://localhost:3000/orders/{order.ID}
-
+GET http://localhost:3000/orders/82900ee6-47c6-449b-9126-a8ebac838812
 ###
 POST http://localhost:3000/close
 
 ###
 GET http://localhost:3000/stats
+
+###
+DELETE http://localhost:3000/orders/82900ee6-47c6-449b-9126-a8ebac838812

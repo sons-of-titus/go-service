@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"context"
 	"fmt"
 	"github.com/sons-of-titus/go-service/db"
 	"github.com/sons-of-titus/go-service/models"
@@ -22,13 +23,14 @@ type Repo interface {
 	CreateOrder(item models.Item) (*models.Order, error)
 	GetAllProducts() []models.Product
 	GetOrder(id string) (models.Order, error)
+	RequestReversal(id string) (*models.Order, error)
 	Close()
-	GetOrderStats() models.Statistics
+	GetOrderStats(ctx context.Context) (models.Statistics, error)
 }
 
 // New creates a new Order repo with the correct database dependencies
 func New() (Repo, error) {
-	processed := make(chan models.Order)
+	processed := make(chan models.Order, stats.WorkerCount)
 	done := make(chan struct{})
 	p, err := db.NewProducts()
 	if err != nil {
@@ -104,7 +106,15 @@ func (r *repo) processOrders() {
 
 // processOrder is an internal method which completes or rejects an order
 func (r *repo) processOrder(order *models.Order) {
+	// ensure the order is still completed
+	fetchedOrder, err := r.orders.Find(order.ID)
+	if err != nil || fetchedOrder.Status != models.OrderStatusCompleted {
+		fmt.Println("duplicate reversal on order ", order.ID)
+	}
 	item := order.Item
+	if order.Status == models.OrderStatusReversalRequested {
+		item.Amount = -item.Amount
+	}
 	product, err := r.products.Find(item.ProductID)
 	if err != nil {
 		order.Status = models.OrderStatusRejected
@@ -116,13 +126,33 @@ func (r *repo) processOrder(order *models.Order) {
 		order.Error = fmt.Sprintf("not enough stock for product %s:got %d, want %d", item.ProductID, product.Stock, item.Amount)
 		return
 	}
-	remainingStock := product.Stock - item.Amount
-	product.Stock = remainingStock
+	product.Stock = product.Stock - item.Amount
 	r.products.Upsert(product)
-
 	total := math.Round(float64(order.Item.Amount)*product.Price*100) / 100
 	order.Total = &total
 	order.Complete()
+}
+
+// RequestReversal fetches an existing order and updates it for reversal
+func (r *repo) RequestReversal(id string) (*models.Order, error) {
+	// tries to find the order first
+	order, err := r.orders.Find(id)
+	if err != nil {
+		return nil, err
+	}
+	if order.Status != models.OrderStatusCompleted {
+		return nil, fmt.Errorf("order status is %s, only completed orders can be reverted ", order.Status)
+	}
+	// set order status to reversalRequested
+	order.Status = models.OrderStatusReversalRequested
+	//place order on the incoming channel
+	select {
+	case r.incoming <- order:
+		r.orders.Upsert(order)
+		return &order, nil
+	case <-r.done:
+		return nil, fmt.Errorf("sorry, the order app is closed")
+	}
 }
 
 // Close closes the orders app for incoming orders
@@ -131,6 +161,11 @@ func (r *repo) Close() {
 }
 
 // GetOrderStats returns the order statistics of the orders app
-func (r *repo) GetOrderStats() models.Statistics {
-	return (*r).stats.GetStats()
+func (r *repo) GetOrderStats(ctx context.Context) (models.Statistics, error) {
+	select {
+	case s := <-r.stats.GetStats(ctx):
+		return s, nil
+	case <-ctx.Done():
+		return models.Statistics{}, ctx.Err()
+	}
 }

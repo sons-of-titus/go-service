@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"context"
 	"fmt"
 	"github.com/sons-of-titus/go-service/models"
 	"math/rand"
@@ -17,7 +18,7 @@ type statsService struct {
 }
 
 type StatsService interface {
-	GetStats() models.Statistics
+	GetStats(ctx context.Context) <-chan models.Statistics
 }
 
 func New(processed <-chan models.Order, done <-chan struct{}) StatsService {
@@ -76,6 +77,13 @@ func (s *statsService) processOrder(order models.Order) models.Statistics {
 			Revenue:         *order.Total,
 		}
 	}
+	//
+	if order.Status == models.OrderStatusReversed {
+		return models.Statistics{
+			ReversedOrders: 1,
+			Revenue:        -*order.Total,
+		}
+	}
 	// otherwise the order is rejected
 	return models.Statistics{
 		RejectedOrders: 1,
@@ -83,8 +91,20 @@ func (s *statsService) processOrder(order models.Order) models.Statistics {
 }
 
 // GetStats returns the latest order stats
-func (s *statsService) GetStats() models.Statistics {
-	return s.result.Get()
+func (s *statsService) GetStats(ctx context.Context) <-chan models.Statistics {
+	stats := make(chan models.Statistics)
+	go func() {
+		randomSleep()
+		select {
+		case stats <- s.result.Get():
+			fmt.Println("Stats fetched successfully")
+			return
+		case <-ctx.Done():
+			fmt.Println("Context deadline exceeded")
+			return
+		}
+	}()
+	return stats
 }
 
 func randomSleep() {
